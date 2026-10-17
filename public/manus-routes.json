@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"لوحة التحكم"},{"path":"/admin/:section","title":"أقسام الإدارة"},{"path":"/admin/notifications","title":"الإشعارات"},{"path":"/admin/app-updates","title":"تحديثات التطبيقات"}]}
