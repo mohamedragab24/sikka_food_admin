@@ -2,6 +2,7 @@
 
 import { getApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
+import { getFirestore, type Firestore } from 'firebase/firestore';
 
 const config = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -11,8 +12,8 @@ const config = {
   messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
 };
 
-export function firebaseClient(): { app: FirebaseApp; auth: Auth } | null {
+export function firebaseClient(): { app: FirebaseApp; auth: Auth; db: Firestore } | null {
   if (!config.apiKey || !config.projectId || !config.appId || !config.authDomain) return null;
   const app = getApps().length ? getApp() : initializeApp(config);
-  return { app, auth: getAuth(app) };
+  return { app, auth: getAuth(app), db: getFirestore(app) };
 }

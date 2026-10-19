@@ -2,7 +2,7 @@
 
 import { CircleMarker, MapContainer, Polygon, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import { useEffect } from 'react';
-import type { Point, DemoRow } from '../lib/demo-data';
+import type { Point, DemoRow } from '../lib/admin-types';
 
 const CAIRO: Point = [30.0444, 31.2357];
 

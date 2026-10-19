@@ -3,8 +3,9 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
+import AdminGate, { useAdminSession } from './admin-session';
 
-const navigation = [
+export const navigation = [
   { label: 'لوحة التحكم', href: '/' },
   { label: 'الطلبات المباشرة', href: '/admin/live-orders' },
   { label: 'إدارة الطلبات', href: '/admin/orders' },
@@ -15,12 +16,19 @@ const navigation = [
   { label: 'العروض والكوبونات', href: '/admin/promotions' },
   { label: 'مناطق التوصيل', href: '/admin/zones' },
   { label: 'الدعم', href: '/admin/support' },
+  { label: 'الإشعارات', href: '/admin/notifications' },
+  { label: 'تحديثات التطبيقات', href: '/admin/app-updates' },
   { label: 'التقارير', href: '/admin/reports' },
   { label: 'الإعدادات', href: '/admin/settings' },
 ];
 
 export default function AdminSectionLayout({ children }: { children: ReactNode }) {
+  return <AdminGate><Shell>{children}</Shell></AdminGate>;
+}
+
+function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const session = useAdminSession();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
@@ -49,7 +57,7 @@ export default function AdminSectionLayout({ children }: { children: ReactNode }
           <header className="topbar">
             <button type="button" className="menu-toggle" aria-label={sidebarOpen ? 'إغلاق القائمة' : 'فتح القائمة'} aria-expanded={sidebarOpen} aria-controls="admin-sidebar" onClick={() => setSidebarOpen((open) => !open)}><span aria-hidden="true">☰</span></button>
             <Link className="section-back" href="/">← لوحة التحكم</Link>
-            <div className="user-chip"><div className="avatar">م</div><div><strong>مدير المنصة</strong><div className="muted">القاهرة، مصر</div></div></div>
+            <div className="user-chip"><div className="avatar">م</div><div><strong>{session.user.displayName || 'مدير المنصة'}</strong><div className="muted">{session.user.email}</div></div><button className="link-button" onClick={() => session.signOut()}>خروج</button></div>
           </header>
           {children}
         </div>

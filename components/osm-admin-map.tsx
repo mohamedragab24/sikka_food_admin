@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import type { DemoRow, Point } from '../lib/demo-data';
+import type { DemoRow, Point } from '../lib/admin-types';
 
 const ClientMap = dynamic(() => import('./osm-admin-map-client').then((module) => module.OpenStreetMap), {
   ssr: false,

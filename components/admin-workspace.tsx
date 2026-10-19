@@ -4,7 +4,10 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNo
 import AdminSectionLayout from './admin-section-layout';
 import AdminMessageCenter from './admin-message-center';
 import { OpenStreetMap, zoneShapes } from './osm-admin-map';
-import { initialDemoData, ORDER_STATUSES, PAYMENT_STATUSES, PROMO_STATUSES, type AdminData, type DemoRow, type Point } from '../lib/demo-data';
+import { arrayUnion, deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { useAdminSession } from './admin-session';
+import { useLiveData } from '../lib/live-data';
+import { ORDER_STATUSES, PAYMENT_STATUSES, PROMO_STATUSES, SECTION_COLLECTION, DEFAULT_SETTINGS, type AdminData, type DemoRow, type Point } from '../lib/admin-types';
 
 const TITLES: Record<string, { title: string; description: string }> = {
   'live-orders': { title: 'الطلبات المباشرة', description: 'تابع الطلبات الجارية ومواقع المطاعم والمندوبين على خريطة القاهرة.' },
@@ -47,7 +50,7 @@ const STATUS_KEY: Record<string, string> = { orders: 'status', restaurants: 'acc
 const MONEY = (value: unknown) => `${Number(value || 0).toLocaleString('ar-EG')} ج.م`;
 const simple = (value: unknown) => value === null || value === undefined || value === '' ? '—' : Array.isArray(value) ? value.map(String).join('، ') : typeof value === 'object' ? JSON.stringify(value) : String(value);
 const flatten = (row: DemoRow) => Object.values(row).map((value) => typeof value === 'object' ? JSON.stringify(value) : String(value ?? '')).join(' ').toLocaleLowerCase('ar');
-const today = '2026-10-14';
+const today = new Date().toLocaleDateString('sv-SE');
 
 function StatusPill({ children }: { children: ReactNode }) {
   const value = String(children ?? '');
@@ -55,41 +58,31 @@ function StatusPill({ children }: { children: ReactNode }) {
   return <span className={`status ${tone}`}>{value}</span>;
 }
 
-function SectionHeading({ section, count, notice = true }: { section: string; count?: number; notice?: boolean }) {
+function SectionHeading({ section, count }: { section: string; count?: number }) {
   const meta = TITLES[section] ?? TITLES.orders;
-  return <div className="workspace-heading"><div><h1>{meta.title}</h1><p>{meta.description}</p></div><div className="heading-badges">{count !== undefined && <span className="count-chip">{count.toLocaleString('ar-EG')} سجل</span>}{notice && <span className="sample-notice">بيانات عرض تجريبية</span>}</div></div>;
+  return <div className="workspace-heading"><div><h1>{meta.title}</h1><p>{meta.description}</p></div><div className="heading-badges">{count !== undefined && <span className="count-chip">{count.toLocaleString('ar-EG')} سجل</span>}</div></div>;
 }
 
 export default function AdminWorkspace({ section }: { section: string }) {
   if (section === 'notifications' || section === 'app-updates') {
     return <AdminSectionLayout><main className="section-content workspace-content"><AdminMessageCenter kind={section} /></main></AdminSectionLayout>;
   }
-  return <AdminWorkspaceContent section={section} />;
+  return <AdminSectionLayout><AdminWorkspaceContent section={section} /></AdminSectionLayout>;
 }
 
+const ACCOUNT_ROLE: Record<string, 'customer' | 'restaurant' | 'driver'> = { customers: 'customer', restaurants: 'restaurant', drivers: 'driver' };
+
 function AdminWorkspaceContent({ section }: { section: string }) {
-  const [data, setData] = useState<AdminData>(initialDemoData);
-  const [ready, setReady] = useState(false);
+  const { db, token } = useAdminSession();
+  const { data, ready, errors } = useLiveData(db);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [secondaryFilter, setSecondaryFilter] = useState('');
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [selected, setSelected] = useState<DemoRow | null>(null);
-  const [modalMode, setModalMode] = useState<'detail' | 'new-promo'>('detail');
+  const [modalMode, setModalMode] = useState<'detail' | 'new-promo' | 'new-account'>('detail');
   const [notice, setNotice] = useState('');
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('maa-admin-demo-v2');
-      if (saved) setData({ ...initialDemoData, ...JSON.parse(saved) as AdminData });
-    } catch { /* تجاهل مخزن محلي تالف واستخدام بيانات العرض */ }
-    setReady(true);
-  }, []);
-
-  useEffect(() => {
-    if (ready) localStorage.setItem('maa-admin-demo-v2', JSON.stringify(data));
-  }, [data, ready]);
 
   useEffect(() => {
     setQuery(''); setStatusFilter(''); setSecondaryFilter(''); setFromDate(''); setToDate('');
@@ -123,17 +116,40 @@ function AdminWorkspaceContent({ section }: { section: string }) {
     return true;
   }), [records, query, statusFilter, secondaryFilter, statusKey, fromDate, toDate]);
 
-  const patchRow = useCallback((key: string, id: string, patch: DemoRow) => {
-    setData((current) => ({ ...current, [key]: (current[key] ?? []).map((row) => String(row.id) === id ? { ...row, ...patch } : row) }));
+  const setMessage = useCallback((message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 4200); }, []);
+
+  const patchRow = useCallback(async (key: string, id: string, patch: DemoRow) => {
+    const source = (data[key] ?? []).find((row) => String(row.id) === id);
+    const ref = String(source?._ref ?? id);
     setSelected((current) => current && String(current.id) === id ? { ...current, ...patch } : current);
-  }, []);
+    try {
+      const role = ACCOUNT_ROLE[key];
+      if (role && typeof patch.accountStatus === 'string') {
+        const { accountStatus, blockReason, ...rest } = patch;
+        const response = await fetch('/api/admin/accounts', {
+          method: 'PATCH',
+          headers: { authorization: `Bearer ${await token()}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ role, uid: ref, accountStatus, blockReason }),
+        });
+        if (!response.ok) throw new Error((await response.json()).error ?? 'تعذر تحديث الحساب');
+        if (Object.keys(rest).length) await updateDoc(doc(db, SECTION_COLLECTION[key], ref), rest);
+        return;
+      }
+      if (key === 'payments') { await updateDoc(doc(db, 'orders', ref), { paymentStatus: patch.status, updated: new Date().toLocaleString('sv-SE').slice(0, 16) }); return; }
+      await updateDoc(doc(db, SECTION_COLLECTION[key], ref), patch);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'تعذر حفظ التغيير');
+    }
+  }, [data, db, token, setMessage]);
 
   const openDetail = (row: DemoRow) => { setSelected(row); setModalMode('detail'); };
-  const setMessage = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(''), 3200); };
 
-  return <AdminSectionLayout><main className="section-content workspace-content">
+  return <main className="section-content workspace-content">
     <SectionHeading section={section} count={section === 'reports' ? data.orders.length : records.length} />
     {notice && <div className="toast" role="status">{notice}</div>}
+    {errors.length > 0 && <div className="message-alert error">تعذر قراءة: {errors.join('، ')}. تأكد من نشر firestore.rules على مشروع Firebase.</div>}
+    {!ready && <div className="message-alert warning">جارٍ تحميل البيانات من Firebase…</div>}
+    {ACCOUNT_ROLE[section] && <div className="filter-bar"><button className="primary-button" onClick={() => { setSelected(null); setModalMode('new-account'); }}>＋ إنشاء حساب {section === 'restaurants' ? 'مطعم' : section === 'drivers' ? 'سائق' : 'عميل'}</button><span className="muted">يُنشأ حساب الدخول والرقم التعريفي ويُربطان بالتطبيق فورًا.</span></div>}
     {section === 'live-orders' && <LiveOrders orders={data.orders} restaurants={data.restaurants} drivers={data.drivers} openDetail={openDetail} />}
     {section === 'orders' && <GenericTable section={section} rows={filtered} columns={COLUMNS.orders} query={query} setQuery={setQuery} searchHint={SEARCH_HINT.orders} statusOptions={ORDER_STATUSES} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} extra={secondarySelect(secondaryOptions,secondaryFilter,setSecondaryFilter)} />}
     {section === 'restaurants' && <GenericTable section={section} rows={filtered} columns={COLUMNS.restaurants} query={query} setQuery={setQuery} searchHint={SEARCH_HINT.restaurants} statusOptions={statusOptions} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} extra={secondarySelect(secondaryOptions,secondaryFilter,setSecondaryFilter)} />}
@@ -141,17 +157,19 @@ function AdminWorkspaceContent({ section }: { section: string }) {
     {section === 'customers' && <GenericTable section={section} rows={filtered} columns={COLUMNS.customers} query={query} setQuery={setQuery} searchHint={SEARCH_HINT.customers} statusOptions={statusOptions} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} />}
     {section === 'payments' && <Payments rows={filtered} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} statusOptions={PAYMENT_STATUSES} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} extra={secondarySelect(secondaryOptions,secondaryFilter,setSecondaryFilter)} />}
     {section === 'promotions' && <Promotions rows={filtered} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} statusOptions={PROMO_STATUSES} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} onNew={() => { setSelected(null); setModalMode('new-promo'); }} onToggle={(row) => patchRow('promotions', String(row.id), { status: row.status === 'نشط' ? 'ملغي' : 'نشط' })} />}
-    {section === 'zones' && <Zones rows={filtered} allZones={data.zones} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} statusOptions={statusOptions} setData={setData} setMessage={setMessage} />}
+    {section === 'zones' && <Zones rows={filtered} allZones={data.zones} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} statusOptions={statusOptions} onSave={async (zone) => { try { await setDoc(doc(db, 'zones', String(zone.id)), { ...zone, updatedAt: serverTimestamp() }); setMessage('تم حفظ المنطقة.'); } catch { setMessage('تعذر حفظ المنطقة (صلاحيات Firestore).'); } }} onToggle={(row) => patchRow('zones', String(row.id), { status: row.status === 'موقوفة' ? 'مفعّلة' : 'موقوفة' })} onDelete={async (row) => { try { await deleteDoc(doc(db, 'zones', String(row._ref ?? row.id))); setMessage('تم حذف المنطقة.'); } catch { setMessage('تعذر حذف المنطقة.'); } }} setMessage={setMessage} />}
     {section === 'support' && <GenericTable section={section} rows={filtered} columns={COLUMNS.support} query={query} setQuery={setQuery} searchHint={SEARCH_HINT.support} statusOptions={['مفتوحة','قيد المعالجة','مكتملة','مصعّدة للإدارة']} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onOpen={openDetail} />}
     {section === 'reports' && <Reports rows={data.orders} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} />}
-    {section === 'settings' && <Settings row={data.settings[0]} onSave={(row) => { setData((current) => ({ ...current, settings: [row] })); setMessage('حُفظت الإعدادات في هذا المتصفح فقط.'); }} />}
+    {section === 'settings' && <Settings row={data.settings[0]} onSave={async (row) => { try { const { _ref, ...clean } = row; await setDoc(doc(db, 'settings', 'platform'), { ...DEFAULT_SETTINGS, ...clean, commissionRate: Number(clean.commissionRate ?? 15), id: 'platform' }, { merge: true }); setMessage('حُفظت الإعدادات.'); } catch { setMessage('تعذر حفظ الإعدادات.'); } }} />}
     {selected && modalMode === 'detail' && <DetailModal section={section} row={selected} allData={data} onClose={() => setSelected(null)} onPatch={(patch) => patchRow(section, String(selected.id), patch)} onReply={(text) => {
-      const next = [...(Array.isArray(selected.messages) ? selected.messages as Array<DemoRow> : []), { from: 'الدعم', text, at: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) }];
-      patchRow('support', String(selected.id), { messages: next, updated: new Date().toLocaleString('ar-EG') });
+      const message = { from: 'الدعم', text, at: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }), ts: Date.now() };
+      updateDoc(doc(db, 'supportTickets', String(selected._ref ?? selected.id)), { messages: arrayUnion(message), updated: new Date().toLocaleString('sv-SE').slice(0, 16), status: 'قيد المعالجة' })
+        .then(() => setSelected((current) => current ? { ...current, messages: [...(Array.isArray(current.messages) ? current.messages : []), message], status: 'قيد المعالجة' } : current))
+        .catch(() => setMessage('تعذر إرسال الرد.'));
     }} />}
-    {modalMode === 'new-promo' && <PromotionModal onClose={() => setModalMode('detail')} onSave={(row) => { setData((current) => ({ ...current, promotions: [{ ...row, id: `PRM-${Date.now()}` }, ...current.promotions] })); setModalMode('detail'); setMessage('تمت إضافة العرض محليًا.'); }} />}
-    <p className="demo-footnote">الحفظ الحالي على هذا المتصفح لنسخة العرض فقط. الربط المشترك والحقيقي بين المستخدمين يحتاج إعداد Firebase Authentication وCloud Firestore وقواعد الصلاحيات.</p>
-  </main></AdminSectionLayout>;
+    {modalMode === 'new-promo' && <PromotionModal onClose={() => setModalMode('detail')} onSave={async (row) => { const id = `PRM-${Date.now().toString(36).toUpperCase()}`; try { await setDoc(doc(db, 'promotions', id), { ...row, id, createdAt: serverTimestamp() }); setModalMode('detail'); setMessage('تمت إضافة العرض.'); } catch { setMessage('تعذر حفظ العرض.'); } }} />}
+    {modalMode === 'new-account' && ACCOUNT_ROLE[section] && <CreateAccountModal role={ACCOUNT_ROLE[section]} getToken={token} onClose={() => setModalMode('detail')} onCreated={(publicId) => { setModalMode('detail'); setMessage(`تم إنشاء الحساب بالرقم التعريفي ${publicId}`); }} />}
+  </main>;
 }
 
 function FilterBar({ query, setQuery, hint, statusOptions, statusFilter, setStatusFilter, fromDate, toDate, setFromDate, setToDate, extra, showDates = true, showSearch = true }: {
@@ -192,21 +210,15 @@ function EmptyState() { return <div className="empty-state"><strong>لا توج�
 
 function LiveOrders({ orders, restaurants, drivers, openDetail }: { orders: DemoRow[]; restaurants: DemoRow[]; drivers: DemoRow[]; openDetail: (row: DemoRow) => void }) {
   const activeOrders = orders.filter((row) => ['جديد','قيد التأكيد','قيد التحضير','جاهز للاستلام','قيد التوصيل'].includes(String(row.status)));
-  const markers = activeOrders.flatMap((order) => {
-    const point = Array.isArray(order.coordinates) ? order.coordinates as Point : [30.0444,31.2357] as Point;
-    const restaurant = restaurants.find((row) => row.id === order.restaurantId);
-    const driver = drivers.find((row) => row.id === order.driverId);
-    const related: Array<{ position: Point; title: string; detail: string; tone: string; onSelect?: () => void }> = [
-      { position: point, title: `${order.order} — العميل`, detail: `${order.customer} · ${order.status} · ${MONEY(order.total)}`, tone: '#ff7657', onSelect: () => openDetail(order) },
-      { position: [point[0] + .004, point[1] - .004], title: String(order.restaurant), detail: 'المطعم · نقطة تجريبية', tone: '#7755a3', onSelect: () => openDetail(order) },
-    ];
-    if (driver) related.push({ position: [point[0] - .004, point[1] + .004], title: String(driver.name), detail: `${driver.online} · ${driver.availability} · نقطة موقع تجريبية`, tone: '#27a36f', onSelect: () => openDetail(order) });
-    else related.push({ position: [point[0] - .006, point[1] + .005], title: `${order.order} — بلا مندوب`, detail: 'الطلب ينتظر تعيين مندوب', tone: '#d19c2e', onSelect: () => openDetail(order) });
-    return related;
-  });
+  const isPoint = (v: unknown): v is Point => Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
+  const markers: Array<{ position: Point; title: string; detail: string; tone: string; onSelect?: () => void }> = [
+    ...activeOrders.flatMap((order) => isPoint(order.coordinates) ? [{ position: order.coordinates, title: `${order.order} — العميل`, detail: `${order.customer} · ${order.status} · ${MONEY(order.total)}`, tone: '#ff7657', onSelect: () => openDetail(order) }] : []),
+    ...restaurants.filter((row) => typeof row.lat === 'number' && typeof row.lng === 'number' && row.accountStatus === 'نشط').map((row) => ({ position: [row.lat as number, row.lng as number] as Point, title: String(row.name), detail: `${row.id} · ${row.accepting}`, tone: '#7755a3' })),
+    ...drivers.filter((row) => typeof row.lat === 'number' && typeof row.lng === 'number' && row.online === 'متصل').map((row) => ({ position: [row.lat as number, row.lng as number] as Point, title: String(row.name), detail: `${row.id} · ${row.availability} · آخر ظهور ${row.lastSeen}`, tone: '#27a36f' })),
+  ];
   return <>
     <div className="workspace-stats"><article><span>طلبات جارية</span><strong>{activeOrders.length}</strong></article><article><span>بانتظار مندوب</span><strong>{activeOrders.filter((row) => !row.driverId).length}</strong></article><article><span>قيد التوصيل</span><strong>{activeOrders.filter((row) => row.status === 'قيد التوصيل').length}</strong></article><article><span>جاهزة للاستلام</span><strong>{activeOrders.filter((row) => row.status === 'جاهز للاستلام').length}</strong></article></div>
-    <div className="map-disclaimer">هذه علامات توضيحية ثابتة داخل القاهرة. تحديث GPS والحالات لحظيًا سيعمل بعد ربط تطبيق السائق وFirestore.</div>
+    <div className="map-disclaimer">العلامات تأتي مباشرة من Firestore: عناوين الطلبات، المطاعم المفتوحة، والسائقون المتصلون بحسب آخر موقع أرسله تطبيق السائق.</div>
     <section className="panel live-map-panel"><div className="panel-head"><h2>خريطة الطلبات المباشرة</h2><div className="map-key"><span><i className="dot orange-dot"/> عميل / طلب</span><span><i className="dot purple-dot"/> مطعم</span><span><i className="dot green-dot"/> مندوب</span></div></div><OpenStreetMap markers={markers} zones={[]} zoom={11} /></section>
     <section className="panel workspace-table-panel"><div className="panel-head"><h2>الطلبات التي تحتاج متابعة</h2><span className="status purple">اختر الطلب لعرض تفاصيله</span></div><div className="table-wrap"><table className="data-table workspace-table"><thead><tr><th>الطلب</th><th>العميل</th><th>المطعم</th><th>المندوب</th><th>الحالة</th><th>القيمة</th></tr></thead><tbody>{activeOrders.map((row) => <tr key={String(row.id)} className="clickable-row" onClick={() => openDetail(row)}><td>{simple(row.order)}</td><td>{simple(row.customer)}</td><td>{simple(row.restaurant)}</td><td>{row.driver ? simple(row.driver) : <StatusPill>بانتظار مندوب</StatusPill>}</td><td><StatusPill>{simple(row.status)}</StatusPill></td><td>{MONEY(row.total)}</td></tr>)}</tbody></table></div></section>
   </>;
@@ -222,7 +234,7 @@ function Payments({ rows, query, setQuery, statusFilter, setStatusFilter, status
   return <>
     <div className="workspace-stats"><article><span>سجلات مطابقة</span><strong>{rows.length}</strong></article><article><span>مدفوع فعليًا</span><strong>{MONEY(rows.filter(r=>r.status==='مدفوع').reduce((n,r)=>n+Number(r.total),0))}</strong></article><article><span>المبالغ المستردة</span><strong>{MONEY(rows.reduce((n,r)=>n+Number(r.refund),0))}</strong></article></div>
     <FilterBar query={query} setQuery={setQuery} hint="ابحث برقم المعاملة أو الطلب أو العميل أو المطعم…" statusOptions={statusOptions} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} extra={<>{extra}<button className="primary-button" onClick={exportCsv}>تصدير CSV</button></>} />
-    <div className="map-disclaimer">حالة السداد مستقلة عن حالة الطلب. التعديل المالي يحتاج صلاحية وتسجيل تدقيق على الخادم عند ربط النظام.</div>
+    <div className="map-disclaimer">حالة السداد مستقلة عن حالة الطلب. تعديل حالة الدفع يُحفظ على الطلب في Firestore.</div>
     <section className="panel workspace-table-panel"><div className="table-wrap"><table className="data-table workspace-table"><thead><tr>{COLUMNS.payments.map(([key,label])=><th key={key}>{label}</th>)}<th>التفاصيل</th></tr></thead><tbody>{rows.map(row=><tr key={String(row.id)} className="clickable-row" onClick={()=>onOpen(row)}>{COLUMNS.payments.map(([key])=><td key={key}>{key==='status'?<StatusPill>{simple(row[key])}</StatusPill>:key==='total'?MONEY(row.total):simple(row[key])}</td>)}<td><button className="small-button" onClick={(event)=>{event.stopPropagation();onOpen(row);}}>تفاصيل المعاملة</button></td></tr>)}</tbody></table></div></section>
   </>;
 }
@@ -242,7 +254,7 @@ function PromotionModal({ onClose, onSave }: { onClose:()=>void; onSave:(row:Dem
   return <Modal title="إنشاء عرض أو كوبون" onClose={onClose}><form className="detail-form" onSubmit={submit}><FormInput label="رمز الكوبون" value={form.code} onChange={v=>update('code',v)} required/><FormInput label="اسم العرض" value={form.name} onChange={v=>update('name',v)} required/><label>نوع الخصم<select value={form.type} onChange={e=>update('type',e.target.value)}><option>نسبة مئوية</option><option>قيمة ثابتة</option></select></label><FormInput label="قيمة الخصم" value={form.value} onChange={v=>update('value',v)} type="number"/><FormInput label="الحد الأقصى للخصم (ج.م)" value={form.maxDiscount} onChange={v=>update('maxDiscount',v)} type="number"/><FormInput label="الحد الأدنى للطلب (ج.م)" value={form.minOrder} onChange={v=>update('minOrder',v)} type="number"/><FormInput label="تاريخ البداية" value={form.start} onChange={v=>update('start',v)} type="date"/><FormInput label="تاريخ النهاية" value={form.end} onChange={v=>update('end',v)} type="date"/><FormInput label="حد مرات الاستخدام" value={form.limit} onChange={v=>update('limit',v)} type="number"/><FormInput label="لكل عميل" value={form.perCustomer} onChange={v=>update('perCustomer',v)} type="number"/><FormInput label="مطاعم مستهدفة" value={form.targetRestaurants} onChange={v=>update('targetRestaurants',v)}/><FormInput label="مناطق مستهدفة" value={form.targetRegions} onChange={v=>update('targetRegions',v)}/><div className="modal-actions"><button className="primary-button" type="submit">حفظ العرض</button><button className="secondary-button" type="button" onClick={onClose}>إلغاء</button></div></form></Modal>;
 }
 
-function Zones({ rows, allZones, query, setQuery, statusFilter, setStatusFilter, statusOptions, setData, setMessage }: { rows:DemoRow[]; allZones:DemoRow[]; query:string; setQuery:(v:string)=>void; statusFilter:string; setStatusFilter:(v:string)=>void; statusOptions:string[]; setData:React.Dispatch<React.SetStateAction<AdminData>>; setMessage:(s:string)=>void }) {
+function Zones({ rows, allZones, query, setQuery, statusFilter, setStatusFilter, statusOptions, onSave, onToggle, onDelete, setMessage }: { rows:DemoRow[]; allZones:DemoRow[]; query:string; setQuery:(v:string)=>void; statusFilter:string; setStatusFilter:(v:string)=>void; statusOptions:string[]; onSave:(zone:DemoRow)=>Promise<void>; onToggle:(row:DemoRow)=>void; onDelete:(row:DemoRow)=>Promise<void>; setMessage:(s:string)=>void }) {
   const [selectedId,setSelectedId]=useState(''); const [draft,setDraft]=useState<Point[]>([]); const [editing,setEditing]=useState(false); const [name,setName]=useState(''); const [city,setCity]=useState('القاهرة'); const [fee,setFee]=useState('15'); const [minimum,setMinimum]=useState('50'); const [center,setCenter]=useState<Point>([30.0444,31.2357]); const [place,setPlace]=useState(''); const [searching,setSearching]=useState(false);
   const selected=allZones.find(row=>String(row.id)===selectedId);
   const shapes=zoneShapes(allZones);
@@ -251,18 +263,18 @@ function Zones({ rows, allZones, query, setQuery, statusFilter, setStatusFilter,
   const findPlace=async()=>{if(!place.trim())return;setSearching(true);try{const response=await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=eg&q=${encodeURIComponent(place)}`,{headers:{'Accept-Language':'ar'}});if(!response.ok)throw new Error();const result=await response.json();if(!result[0]){setMessage('لم نعثر على الموقع. جرّب اسمًا أو عنوانًا أوضح.');return;}setCenter([Number(result[0].lat),Number(result[0].lon)]);setMessage(`تم العثور على: ${result[0].display_name}`);}catch{setMessage('تعذر البحث عن المكان الآن. يمكنك تحديده بالنقر على الخريطة.');}finally{setSearching(false);}};
   const saveZone=()=>{
     if(!name.trim()||draft.length<3){setMessage('أدخل اسم المنطقة وحدد ثلاث نقاط أو أكثر لإغلاق حدودها.');return;}
-    const candidate={id:selectedId||`ZON-${Date.now()}`,name:name.trim(),city:city.trim(),fee:Number(fee),minOrder:Number(minimum),status:'مفعّلة',polygon:draft};
+    const candidate={id:selectedId||`ZON-${Date.now().toString(36).toUpperCase()}`,name:name.trim(),city:city.trim(),fee:Number(fee),minOrder:Number(minimum),status:'مفعّلة',polygon:draft};
     const others=allZones.filter(row=>String(row.id)!==selectedId&&row.status!=='موقوفة');
     if(others.some(row=>polygonsOverlap(draft,Array.isArray(row.polygon)?row.polygon as Point[]:[]))){setMessage('تتداخل الحدود مع منطقة توصيل مفعّلة. عدّل النقاط لتجنّب تعارض الرسوم.');return;}
-    setData(current=>({...current,zones:selectedId?current.zones.map(row=>String(row.id)===selectedId?candidate:row):[candidate,...current.zones]}));
-    setEditing(false);setDraft([]);setMessage('تم حفظ المنطقة في هذا المتصفح.');
+    void onSave(candidate);
+    setEditing(false);setDraft([]);
   };
-  const toggleZone=(row:DemoRow)=>setData(current=>({...current,zones:current.zones.map(zone=>String(zone.id)===String(row.id)?{...zone,status:zone.status==='موقوفة'?'مفعّلة':'موقوفة'}:zone)}));
-  const deleteZone=(row:DemoRow)=>{if(!window.confirm(`حذف منطقة «${row.name}»؟`))return;setData(current=>({...current,zones:current.zones.filter(zone=>String(zone.id)!==String(row.id))}));setMessage('تم حذف المنطقة محليًا.');};
+  const toggleZone=(row:DemoRow)=>onToggle(row);
+  const deleteZone=(row:DemoRow)=>{if(!window.confirm(`حذف منطقة «${row.name}»؟`))return;void onDelete(row);};
   return <>
     <FilterBar query={query} setQuery={setQuery} hint="ابحث باسم المنطقة أو المدينة…" statusOptions={statusOptions} statusFilter={statusFilter} setStatusFilter={setStatusFilter} fromDate="" toDate="" setFromDate={()=>{}} setToDate={()=>{}} showDates={false} extra={<button className="primary-button" onClick={beginNew}>＋ منطقة جديدة</button>} />
     <div className="map-disclaimer">ابحث عن موقع في مصر ثم انقر على الخريطة لإضافة نقاط الحدود. أضف 3 نقاط على الأقل؛ تُرفض الحدود إذا تداخلت مع منطقة مفعّلة أخرى. تعتمد البلاطات على OpenStreetMap.</div>
-    <section className="panel zone-map-panel"><div className="panel-head"><h2>{editing?'رسم / تعديل حدود المنطقة':'خريطة مناطق التوصيل'}</h2><span className="status purple">{editing?`${draft.length} نقاط محددة`:'مناطق مصر التجريبية'}</span></div>
+    <section className="panel zone-map-panel"><div className="panel-head"><h2>{editing?'رسم / تعديل حدود المنطقة':'خريطة مناطق التوصيل'}</h2><span className="status purple">{editing?`${draft.length} نقاط محددة`:'مناطق التوصيل المعرّفة'}</span></div>
       <div className="map-search-row"><input value={place} onChange={e=>setPlace(e.target.value)} onKeyDown={e=>e.key==='Enter'&&findPlace()} placeholder="ابحث عن حي أو عنوان في مصر…"/><button className="secondary-button" onClick={findPlace} disabled={searching}>{searching?'جارٍ البحث…':'بحث على الخريطة'}</button>{editing&&<><button className="secondary-button" onClick={()=>setDraft(points=>points.slice(0,-1))} disabled={!draft.length}>تراجع عن نقطة</button><button className="secondary-button" onClick={()=>setDraft([])} disabled={!draft.length}>مسح الرسم</button></>}</div>
       <OpenStreetMap zones={shapes} draft={editing?draft:[]} center={center} zoom={12} onAddPoint={editing?(point)=>setDraft(current=>[...current,point]):undefined}/>
       {editing&&<div className="zone-form"><FormInput label="اسم المنطقة" value={name} onChange={setName} required/><FormInput label="المدينة" value={city} onChange={setCity}/><FormInput label="رسوم التوصيل (ج.م)" type="number" value={fee} onChange={setFee}/><FormInput label="الحد الأدنى للطلب (ج.م)" type="number" value={minimum} onChange={setMinimum}/><button className="primary-button" onClick={saveZone}>حفظ الحدود والمنطقة</button><button className="secondary-button" onClick={()=>{setEditing(false);setDraft([]);}}>إلغاء</button></div>}
@@ -293,7 +305,7 @@ function Reports({ rows, fromDate, toDate, setFromDate, setToDate }: { rows:Demo
 function Settings({ row, onSave }: { row:DemoRow; onSave:(row:DemoRow)=>void }) {
   const [form,setForm]=useState({...row});
   const change=(key:string,value:string)=>setForm(current=>({...current,[key]:value}));
-  return <section className="panel settings-panel"><div className="panel-head"><h2>إعدادات المنصة الإقليمية</h2><span className="sample-notice">محفوظة محليًا في نسخة العرض</span></div><div className="settings-grid"><FormInput label="الدولة" value={String(form.country??'')} onChange={v=>change('country',v)}/><FormInput label="العملة" value={String(form.currency??'')} onChange={v=>change('currency',v)}/><FormInput label="المنطقة الزمنية" value={String(form.timezone??'')} onChange={v=>change('timezone',v)}/><FormInput label="لغة لوحة التحكم" value={String(form.language??'')} onChange={v=>change('language',v)}/><FormInput label="هاتف خدمة العملاء" value={String(form.deliveryPhone??'')} onChange={v=>change('deliveryPhone',v)}/></div><div className="settings-note"><strong>إعداد الخرائط</strong><p>المصدر المفتوح: OpenStreetMap عبر Leaflet. نقاط العملاء والسائقين الحالية تجريبية. يُرجى اعتماد مزود بلاطات مناسب للاستخدام الإنتاجي واحترام سياسة الاستخدام والإسناد.</p></div><button className="primary-button" onClick={()=>onSave(form)}>حفظ الإعدادات</button></section>;
+  return <section className="panel settings-panel"><div className="panel-head"><h2>إعدادات المنصة الإقليمية</h2><span className="status green">محفوظة في Firestore</span></div><div className="settings-grid"><FormInput label="الدولة" value={String(form.country??'')} onChange={v=>change('country',v)}/><FormInput label="العملة" value={String(form.currency??'')} onChange={v=>change('currency',v)}/><FormInput label="المنطقة الزمنية" value={String(form.timezone??'')} onChange={v=>change('timezone',v)}/><FormInput label="لغة لوحة التحكم" value={String(form.language??'')} onChange={v=>change('language',v)}/><FormInput label="هاتف خدمة العملاء" value={String(form.deliveryPhone??'')} onChange={v=>change('deliveryPhone',v)}/><FormInput label="نسبة عمولة المنصة (%)" type="number" value={String(form.commissionRate??15)} onChange={v=>change('commissionRate',v)}/></div><div className="settings-note"><strong>إعداد الخرائط</strong><p>المصدر المفتوح: OpenStreetMap عبر Leaflet. مواقع السائقين والمطاعم والعملاء تأتي من Firestore مباشرة. يُرجى اعتماد مزود بلاطات مناسب للاستخدام الإنتاجي واحترام سياسة الاستخدام والإسناد.</p></div><button className="primary-button" onClick={()=>onSave(form)}>حفظ الإعدادات</button></section>;
 }
 
 function DetailModal({ section, row, allData, onClose, onPatch, onReply }: { section:string; row:DemoRow; allData:AdminData; onClose:()=>void; onPatch:(patch:DemoRow)=>void; onReply:(message:string)=>void }) {
@@ -301,32 +313,34 @@ function DetailModal({ section, row, allData, onClose, onPatch, onReply }: { sec
   const [edit,setEdit]=useState(false);
   const relatedOrders=allData.orders.filter(order=>order.customerId===row.id||order.restaurantId===row.id||order.driverId===row.id||order.order===row.order);
   const title=section==='orders'?`تفاصيل الطلب ${simple(row.order)}`:section==='restaurants'?`ملف المطعم — ${simple(row.name)}`:section==='drivers'?`ملف المندوب — ${simple(row.name)}`:section==='customers'?`ملف العميل — ${simple(row.name)}`:section==='payments'?`تفاصيل المعاملة — ${simple(row.id)}`:section==='support'?`محادثة ${simple(row.id)}`:section==='promotions'?`العرض — ${simple(row.code)}`:`تفاصيل ${simple(row.id)}`;
-  const fields=Object.entries(row).filter(([key])=>!['polygon','history','messages','coordinates'].includes(key));
+  const fields=Object.entries(row).filter(([key])=>!key.startsWith('_')&&!['polygon','history','messages','coordinates','itemsList','createdAt','updatedAt','fcmToken','publicId','createdBy','customerUid','restaurantUid','driverUid','requesterUid','lat','lng','locationUpdatedAt'].includes(key));
   const allowedNext:Record<string,string[]>={'جديد':['قيد التأكيد','ملغي'],'قيد التأكيد':['قيد التحضير','ملغي'],'قيد التحضير':['جاهز للاستلام','ملغي'],'جاهز للاستلام':['قيد التوصيل','ملغي'],'قيد التوصيل':['مكتمل']};
   const updatePayment=(status:string)=>onPatch({status});
+  const inactiveStatuses=['موقوف','مقيّد','بانتظار الموافقة'];
+  const isInactive=inactiveStatuses.includes(String(row.accountStatus));
   const toggleAccount=()=>{
-    const next=row.accountStatus==='موقوف'||row.accountStatus==='مقيّد'?'نشط':'موقوف';
-    const reason=next==='موقوف'?window.prompt('اكتب سبب إيقاف الحساب (سيُحفظ محليًا في العرض):'):'';
-    if(next==='موقوف'&&!reason?.trim())return;
-    onPatch({accountStatus:next,...(section==='drivers'&&next==='موقوف'?{blockReason:reason}:{}),...(section==='drivers'&&next==='موقوف'?{online:'غير متصل',availability:'غير متاح'}:{})});
+    const next=isInactive?'نشط':section==='customers'?'مقيّد':'موقوف';
+    const reason=next==='نشط'?'':window.prompt('اكتب سبب الإيقاف / التقييد:');
+    if(next!=='نشط'&&!reason?.trim())return;
+    onPatch({accountStatus:next,...(section==='drivers'?{blockReason:reason??''}:{})});
   };
   const messages=Array.isArray(row.messages)?row.messages as DemoRow[]:[];
   return <Modal title={title} onClose={onClose} wide>
     {(section==='orders'||section==='restaurants'||section==='drivers'||section==='customers'||section==='payments'||section==='promotions')&&<div className="detail-metrics">{profileMetrics(section,row).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>}
     {section==='orders'&&<div className="order-progress"><label>تحديث حالة الطلب<select value={String(row.status)} onChange={e=>onPatch({status:e.target.value,updated:new Date().toLocaleString('ar-EG')})}><option value={String(row.status)}>{String(row.status)} — الحالية</option>{(allowedNext[String(row.status)]??[]).map(status=><option value={status} key={status}>{status}</option>)}</select></label><label>حالة السداد المستقلة<select value={String(row.paymentStatus)} onChange={e=>onPatch({paymentStatus:e.target.value})}>{PAYMENT_STATUSES.map(status=><option key={status}>{status}</option>)}</select></label><div className="notice-inline">تغيير حالة الطلب لا يغيّر حالة الدفع. التحقق المالي الفعلي يجب أن يصدر من مزود الدفع.</div></div>}
-    {section==='payments'&&<div className="order-progress"><label>حالة المعاملة<select value={String(row.status)} onChange={e=>updatePayment(e.target.value)}>{PAYMENT_STATUSES.map(status=><option key={status}>{status}</option>)}</select></label><div className="notice-inline">التغييرات هنا تجريبية ولا تنفذ رد أموال أو تسوية مالية فعلية.</div></div>}
+    {section==='payments'&&<div className="order-progress"><label>حالة المعاملة<select value={String(row.status)} onChange={e=>updatePayment(e.target.value)}>{PAYMENT_STATUSES.map(status=><option key={status}>{status}</option>)}</select></label><div className="notice-inline">تغيير الحالة هنا يسجل الحالة فقط ولا ينفذ رد أموال أو تسوية فعلية عند مزود الدفع.</div></div>}
     {section==='support'&&<div className="chat-box"><div className="chat-top"><StatusPill>{simple(row.status)}</StatusPill><div className="row-actions"><button className="secondary-button" onClick={()=>onPatch({status:'مكتملة'})}>إغلاق كمكتملة</button><button className="secondary-button" onClick={()=>onPatch({status:'مصعّدة للإدارة'})}>تصعيد للإدارة</button><button className="secondary-button" onClick={()=>onPatch({status:'قيد المعالجة'})}>قيد المعالجة</button></div></div><div className="chat-messages">{messages.map((message,index)=><div className={`chat-message ${message.from==='الدعم'?'from-agent':''}`} key={index}><small>{simple(message.from)} · {simple(message.at)}</small><p>{simple(message.text)}</p></div>)}</div>{row.status!=='مكتملة'&&<form className="chat-reply" onSubmit={event=>{event.preventDefault();if(!reply.trim())return;onReply(reply.trim());setReply('');}}><input value={reply} onChange={event=>setReply(event.target.value)} placeholder="اكتب ردًا للعميل…"/><button className="primary-button" type="submit">إرسال</button></form>}{row.status==='مكتملة'&&<div className="notice-inline">تم إغلاق المحادثة. أعد فتحها بتغيير الحالة إلى «قيد المعالجة» لإرسال رد جديد.</div>}</div>}
     {section==='promotions'&&<div className="modal-actions"><button className="secondary-button" onClick={()=>onPatch({status:row.status==='نشط'?'ملغي':'نشط'})}>{row.status==='نشط'?'إيقاف العرض':'تفعيل العرض'}</button><button className="secondary-button" onClick={()=>setEdit(value=>!value)}>{edit?'إلغاء التعديل':'تعديل العرض'}</button></div>}
     {edit&&section==='promotions'&&<form className="detail-form" onSubmit={event=>{event.preventDefault();const form=new FormData(event.currentTarget);const patch=Object.fromEntries(form.entries());onPatch({...patch,value:Number(patch.value),maxDiscount:Number(patch.maxDiscount),minOrder:Number(patch.minOrder),limit:Number(patch.limit),perCustomer:Number(patch.perCustomer)});setEdit(false);}}><FormInput name="name" label="اسم العرض" defaultValue={String(row.name??'')}/><FormInput name="value" label="قيمة الخصم" type="number" defaultValue={String(row.value??0)}/><FormInput name="maxDiscount" label="الحد الأقصى للخصم" type="number" defaultValue={String(row.maxDiscount??0)}/><FormInput name="minOrder" label="الحد الأدنى للطلب" type="number" defaultValue={String(row.minOrder??0)}/><FormInput name="end" label="تاريخ النهاية" type="date" defaultValue={String(row.end??'')}/><FormInput name="limit" label="حد الاستخدام" type="number" defaultValue={String(row.limit??0)}/><FormInput name="perCustomer" label="لكل عميل" type="number" defaultValue={String(row.perCustomer??1)}/><FormInput name="targetRestaurants" label="المطاعم المستهدفة" defaultValue={String(row.targetRestaurants??'')}/><FormInput name="targetRegions" label="المناطق المستهدفة" defaultValue={String(row.targetRegions??'')}/><button className="primary-button" type="submit">حفظ التعديل</button></form>}
-    {section==='drivers'&&<div className="modal-actions"><button className="secondary-button" onClick={toggleAccount}>{row.accountStatus==='موقوف'?'إلغاء الإيقاف':'إيقاف الحساب'}</button><button className="secondary-button" onClick={()=>onPatch({documents:row.documents==='موثقة'?'بانتظار التجديد':'موثقة'})}>تحديث حالة المستندات</button><button className="secondary-button" onClick={()=>onPatch({availability:row.availability==='متاح'?'غير متاح':'متاح'})}>تبديل التوافر</button></div>}
-    {section==='restaurants'&&<div className="modal-actions"><button className="secondary-button" onClick={toggleAccount}>{row.accountStatus==='موقوف'?'تفعيل الحساب':'إيقاف الحساب'}</button><button className="secondary-button" onClick={()=>onPatch({accepting:row.accepting==='مفتوح'?'مغلق مؤقتًا':'مفتوح'})}>{row.accepting==='مفتوح'?'إيقاف استقبال الطلبات':'فتح استقبال الطلبات'}</button></div>}
+    {section==='drivers'&&<div className="modal-actions"><button className="secondary-button" onClick={toggleAccount}>{row.accountStatus==='بانتظار الموافقة'?'الموافقة وتفعيل الحساب':row.accountStatus==='موقوف'?'إلغاء الإيقاف':'إيقاف الحساب'}</button><button className="secondary-button" onClick={()=>onPatch({documents:row.documents==='موثقة'?'بانتظار التجديد':'موثقة'})}>تحديث حالة المستندات</button><button className="secondary-button" onClick={()=>onPatch({availability:row.availability==='متاح'?'غير متاح':'متاح'})}>تبديل التوافر</button></div>}
+    {section==='restaurants'&&<div className="modal-actions"><button className="secondary-button" onClick={toggleAccount}>{row.accountStatus==='بانتظار الموافقة'?'الموافقة وتفعيل الحساب':row.accountStatus==='موقوف'?'تفعيل الحساب':'إيقاف الحساب'}</button><button className="secondary-button" onClick={()=>onPatch({accepting:row.accepting==='مفتوح'?'مغلق مؤقتًا':'مفتوح'})}>{row.accepting==='مفتوح'?'إيقاف استقبال الطلبات':'فتح استقبال الطلبات'}</button></div>}
     {section==='customers'&&<div className="modal-actions"><button className="secondary-button" onClick={toggleAccount}>{row.accountStatus==='مقيّد'?'إعادة تفعيل الحساب':'تقييد الحساب'}</button></div>}
     <section className="detail-fields"><h3>{section==='drivers'||section==='restaurants'||section==='customers'?'بيانات الملف':'بيانات السجل'}</h3><div className="detail-grid">{fields.map(([key,value])=><div key={key}><span>{fieldLabel(key)}</span><strong>{key==='total'||key==='spent'||key==='sales'||key==='payable'||key==='earnings'||key==='deliveryFee'||key==='commission'||key==='restaurantNet'||key==='driverDue'||key==='refund'||key==='minOrder'||key==='maxDiscount'?MONEY(value):simple(value)}</strong></div>)}</div></section>
     {section==='orders'&&<><section className="detail-fields"><h3>المنتجات والكميات</h3><p>{simple(row.items)}</p><div className="detail-grid"><div><span>رسوم التوصيل</span><strong>{MONEY(row.deliveryFee)}</strong></div><div><span>طريقة الدفع</span><strong>{simple(row.paymentMethod)}</strong></div><div><span>آخر تحديث</span><strong>{simple(row.updated)}</strong></div>{Boolean(row.cancelReason)&&<div><span>سبب الإلغاء</span><strong>{simple(row.cancelReason)}</strong></div>}</div></section><section className="detail-fields"><h3>سجل تغييرات الحالة</h3><pre className="history-box">{simple(row.history)}</pre></section></>}
-    {['restaurants','drivers','customers'].includes(section)&&<section className="detail-fields"><h3>سجل الطلبات المرتبط</h3>{relatedOrders.length?<div className="related-list">{relatedOrders.map(order=><div key={String(order.id)}><strong>{simple(order.order)}</strong><span>{simple(order.date)}</span><StatusPill>{simple(order.status)}</StatusPill><b>{MONEY(order.total)}</b></div>)}</div>:<div className="muted">لا توجد طلبات مرتبطة ضمن بيانات العرض.</div>}</section>}
+    {['restaurants','drivers','customers'].includes(section)&&<section className="detail-fields"><h3>سجل الطلبات المرتبط</h3>{relatedOrders.length?<div className="related-list">{relatedOrders.map(order=><div key={String(order.id)}><strong>{simple(order.order)}</strong><span>{simple(order.date)}</span><StatusPill>{simple(order.status)}</StatusPill><b>{MONEY(order.total)}</b></div>)}</div>:<div className="muted">لا توجد طلبات مرتبطة بعد.</div>}</section>}
     {section==='drivers'&&Boolean(row.blockReason)&&<div className="notice-inline">سبب الإيقاف: {simple(row.blockReason)}</div>}
     {section==='customers'&&<section className="detail-fields"><h3>العناوين والمحادثات</h3><p>العنوان المحفوظ: {simple(row.address)}</p><p>التذاكر المفتوحة: {allData.support.filter(ticket=>ticket.customerId===row.id&&ticket.status!=='مكتملة').length}</p></section>}
-    {section==='payments'&&<><section className="detail-fields"><h3>توزيع المعاملة</h3><div className="detail-grid"><div><span>رسوم التوصيل</span><strong>{MONEY(row.deliveryFee)}</strong></div><div><span>عمولة المنصة</span><strong>{MONEY(row.commission)}</strong></div><div><span>صافي المطعم</span><strong>{MONEY(row.restaurantNet)}</strong></div><div><span>مستحق المندوب</span><strong>{MONEY(row.driverDue)}</strong></div><div><span>المبلغ المسترد</span><strong>{MONEY(row.refund)}</strong></div></div></section><section className="detail-fields"><h3>سجل تدقيق العرض</h3><p>لا يوجد سجل مالي خادمي في النسخة التجريبية. لن يُنفّذ رد مبلغ من هذه الشاشة.</p></section></>}
+    {section==='payments'&&<><section className="detail-fields"><h3>توزيع المعاملة</h3><div className="detail-grid"><div><span>رسوم التوصيل</span><strong>{MONEY(row.deliveryFee)}</strong></div><div><span>عمولة المنصة</span><strong>{MONEY(row.commission)}</strong></div><div><span>صافي المطعم</span><strong>{MONEY(row.restaurantNet)}</strong></div><div><span>مستحق المندوب</span><strong>{MONEY(row.driverDue)}</strong></div><div><span>المبلغ المسترد</span><strong>{MONEY(row.refund)}</strong></div></div></section><section className="detail-fields"><h3>سجل تدقيق العرض</h3><p>لا ينفذ هذا القسم رد مبالغ فعلية؛ سجّل الحالة هنا بعد إتمام الرد عند مزود الدفع.</p></section></>}
   </Modal>;
 }
 
@@ -340,6 +354,39 @@ function profileMetrics(section:string,row:DemoRow):Array<[string,string]> {
 }
 
 function fieldLabel(key:string) { const labels:Record<string,string>={id:'المعرّف',uid:'معرّف الحساب',name:'الاسم',order:'رقم الطلب',customer:'العميل',customerId:'رقم العميل',restaurant:'المطعم',restaurantId:'رقم المطعم',driver:'المندوب',driverId:'رقم المندوب',region:'المنطقة',status:'الحالة',total:'الإجمالي',deliveryFee:'رسوم التوصيل',paymentMethod:'طريقة الدفع',paymentStatus:'حالة الدفع',date:'التاريخ',items:'المنتجات',created:'وقت الإنشاء',updated:'آخر تحديث',cancelReason:'سبب الإلغاء',phone:'رقم الهاتف',email:'البريد الإلكتروني',address:'العنوان',accountStatus:'حالة الحساب',accepting:'استقبال الطلبات',orders:'إجمالي الطلبات',completed:'الطلبات المكتملة',cancelled:'الطلبات الملغاة',current:'الطلبات الجارية',sales:'إجمالي المبيعات',payable:'المستحقات',joined:'تاريخ التسجيل',lastActivity:'آخر نشاط',rating:'التقييم',owner:'اسم المسؤول',online:'الاتصال بالتطبيق',availability:'التوافر للطلبات',lastSeen:'آخر ظهور',location:'آخر موقع معروف',earnings:'إجمالي الأرباح',vehicle:'المركبة',documents:'المستندات والتحقق',blockReason:'سبب الإيقاف',lastOrder:'آخر طلب',spent:'المبالغ المدفوعة',method:'طريقة الدفع',commission:'العمولة',restaurantNet:'صافي المطعم',driverDue:'مستحق المندوب',refund:'المبلغ المسترد',code:'رمز العرض',type:'نوع الخصم',value:'قيمة الخصم',maxDiscount:'الحد الأقصى للخصم',minOrder:'الحد الأدنى للطلب',start:'تاريخ البداية',end:'تاريخ النهاية',uses:'عدد الاستخدامات',limit:'حد الاستخدام',perCustomer:'لكل عميل',targetRestaurants:'المطاعم المستهدفة',targetRegions:'المناطق المستهدفة',city:'المدينة',fee:'رسوم التوصيل',subject:'الموضوع',category:'القسم',country:'الدولة',currency:'العملة',timezone:'المنطقة الزمنية',language:'اللغة',deliveryPhone:'هاتف خدمة العملاء'}; return labels[key]??key; }
+
+function CreateAccountModal({ role, getToken, onClose, onCreated }: { role: 'customer' | 'restaurant' | 'driver'; getToken: () => Promise<string>; onClose: () => void; onCreated: (publicId: string) => void }) {
+  const labels = { customer: 'عميل', restaurant: 'مطعم', driver: 'سائق' } as const;
+  const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', address: '', vehicle: '', owner: '' });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const set = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const generate = () => set('password', Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 57]).join(''));
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError('');
+    try {
+      const response = await fetch('/api/admin/accounts', { method: 'POST', headers: { authorization: `Bearer ${await getToken()}`, 'content-type': 'application/json' }, body: JSON.stringify({ role, ...form }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? 'تعذر إنشاء الحساب');
+      onCreated(result.publicId);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'تعذر إنشاء الحساب'); } finally { setBusy(false); }
+  };
+  return <Modal title={`إنشاء حساب ${labels[role]}`} onClose={onClose}>
+    <form className="detail-form" onSubmit={submit}>
+      <FormInput label={role === 'restaurant' ? 'اسم المطعم' : 'الاسم الكامل'} value={form.name} onChange={(v) => set('name', v)} required />
+      {role === 'restaurant' && <FormInput label="اسم المسؤول" value={form.owner} onChange={(v) => set('owner', v)} />}
+      <FormInput label="البريد الإلكتروني (اسم الدخول)" type="email" value={form.email} onChange={(v) => set('email', v)} required />
+      <FormInput label="رقم الهاتف" type="tel" value={form.phone} onChange={(v) => set('phone', v)} required />
+      <FormInput label={role === 'restaurant' ? 'عنوان المطعم' : 'العنوان'} value={form.address} onChange={(v) => set('address', v)} />
+      {role === 'driver' && <FormInput label="المركبة" value={form.vehicle} onChange={(v) => set('vehicle', v)} />}
+      <FormInput label="كلمة المرور (8 أحرف على الأقل)" value={form.password} onChange={(v) => set('password', v)} required />
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={generate}>توليد كلمة مرور</button></div>
+      {error && <div className="message-alert error">{error}</div>}
+      <div className="notice-inline">سلّم البريد وكلمة المرور لصاحب الحساب؛ سيدخل بهما إلى تطبيق {labels[role]}. لن تظهر كلمة المرور مرة أخرى.</div>
+      <div className="modal-actions"><button className="primary-button" type="submit" disabled={busy}>{busy ? 'جارٍ الإنشاء…' : 'إنشاء الحساب'}</button><button className="secondary-button" type="button" onClick={onClose}>إلغاء</button></div>
+    </form>
+  </Modal>;
+}
 
 function FormInput({ label, value, onChange, type='text', required=false, name, defaultValue }: { label:string; value?:string; onChange?:(value:string)=>void; type?:string; required?:boolean; name?:string; defaultValue?:string }) {
   return <label>{label}<input name={name} type={type} value={value} defaultValue={defaultValue} required={required} onChange={onChange?event=>onChange(event.target.value):undefined}/></label>;
