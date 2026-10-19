@@ -1,4 +1,4 @@
-import { adminAuth, adminDb } from '@/lib/firebaseAdmin';
+import { adminAuth, adminDb, readCredentials } from '@/lib/firebaseAdmin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,15 @@ export async function GET() {
     NEXT_PUBLIC_FIREBASE_PROJECT_ID: Boolean(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID),
     NEXT_PUBLIC_FIREBASE_APP_ID: Boolean(process.env.NEXT_PUBLIC_FIREBASE_APP_ID),
   };
-  const result: Record<string, unknown> = { env, auth: 'غير مفحوص', firestore: 'غير مفحوص', hasAdmin: null };
+  const credentials = readCredentials();
+  const keyInfo = credentials ? {
+    بداية_المفتاح_صحيحة: credentials.privateKey.startsWith('-----BEGIN PRIVATE KEY-----'),
+    نهاية_المفتاح_صحيحة: credentials.privateKey.trim().endsWith('-----END PRIVATE KEY-----'),
+    طول_المحتوى: credentials.privateKey.replace(/-----[A-Z ]+-----|\s/g, '').length,
+    طول_متوقع_تقريبًا: '1600',
+    البريد: credentials.clientEmail,
+  } : 'لا توجد بيانات اعتماد';
+  const result: Record<string, unknown> = { keyInfo, usingJson: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON), env, auth: 'غير مفحوص', firestore: 'غير مفحوص', hasAdmin: null };
   try {
     await adminAuth().listUsers(1);
     result.auth = 'يعمل';
