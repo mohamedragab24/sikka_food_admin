@@ -78,6 +78,21 @@ export default function AdminGate({ children }: { children: ReactNode }) {
     } finally { setBusy(false); }
   }
 
+  async function promoteSelf() {
+    if (!client || !user) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch('/api/auth/bootstrap', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await user.getIdToken()}` }, body: '{}' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? 'تعذر ترقية الحساب');
+      await user.getIdToken(true);
+      setFirstAvailable(false);
+      setIsAdmin(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'تعذر ترقية الحساب');
+    } finally { setBusy(false); }
+  }
+
   const shell = (content: ReactNode) => <div className="message-shell" style={{ maxWidth: 520, margin: '8vh auto' }}>{content}</div>;
 
   if (!ready) return shell(<div className="message-alert warning">جارٍ التحقق من جلسة المدير…</div>);
@@ -106,7 +121,17 @@ export default function AdminGate({ children }: { children: ReactNode }) {
       </form>
     ),
   );
-  if (!isAdmin) return shell(<div className="message-login"><div className="message-alert error">هذا الحساب ({user.email}) ليس مديرًا. أنشئ المدير بالأمر <code>npm run create-admin</code>.</div><button className="secondary-button" onClick={() => signOut(client.auth)}>تسجيل الخروج</button></div>);
+  if (!isAdmin) return shell(
+    <div className="message-login">
+      <div className="message-alert error">هذا الحساب ({user.email}) ليس مديرًا.</div>
+      {firstAvailable && <>
+        <p>لا يوجد مدير بعد. يمكنك جعل هذا الحساب هو <strong>المدير الأول (المالك)</strong> بكل المناصب.</p>
+        {error && <div className="message-alert error">{error}</div>}
+        <button className="primary-button" onClick={promoteSelf} disabled={busy}>{busy ? 'جارٍ التنفيذ…' : 'اجعل هذا الحساب هو المدير الأول'}</button>
+      </>}
+      <button className="secondary-button" onClick={() => signOut(client.auth)}>تسجيل الخروج</button>
+    </div>,
+  );
 
   const session: Session = { user, db: client.db, token: () => user.getIdToken(), signOut: () => signOut(client.auth) };
   return <SessionContext.Provider value={session}>{children}</SessionContext.Provider>;
