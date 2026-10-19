@@ -22,7 +22,7 @@ export async function GET() {
     طول_متوقع_تقريبًا: '1600',
     البريد: credentials.clientEmail,
   } : `لا توجد بيانات اعتماد — ${problem}`;
-  const result: Record<string, unknown> = { keyInfo, usingJson: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON), env, auth: 'غير مفحوص', firestore: 'غير مفحوص', hasAdmin: null };
+  const result: Record<string, unknown> = { keyInfo, usingJson: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON), jsonLength: (process.env.FIREBASE_SERVICE_ACCOUNT_JSON ?? '').length, usingBase64: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64), base64Length: (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 ?? '').length, env, auth: 'غير مفحوص', firestore: 'غير مفحوص', hasAdmin: null };
   try {
     await adminAuth().listUsers(1);
     result.auth = 'يعمل';

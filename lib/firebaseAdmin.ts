@@ -32,6 +32,17 @@ function fromJsonText(text: string): { credentials: Credentials | null; problem:
 }
 
 export function credentialsStatus(): { credentials: Credentials | null; problem: string } {
+  const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
+  if (b64) {
+    try {
+      const decoded = Buffer.from(b64.trim().replace(/\s+/g, ''), 'base64').toString('utf8');
+      const result = fromJsonText(decoded);
+      if (result.credentials) return result;
+      return { credentials: null, problem: `FIREBASE_SERVICE_ACCOUNT_BASE64 موجود لكن محتواه غير صالح (${result.problem})` };
+    } catch {
+      return { credentials: null, problem: 'FIREBASE_SERVICE_ACCOUNT_BASE64 غير صالح (تعذر فك الترميز)' };
+    }
+  }
   const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   if (json) {
     const result = fromJsonText(json);
