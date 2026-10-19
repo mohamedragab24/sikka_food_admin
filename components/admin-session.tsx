@@ -25,6 +25,13 @@ export default function AdminGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [name, setName] = useState('');
+  const [firstAvailable, setFirstAvailable] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/auth/bootstrap', { cache: 'no-store' }).then((r) => r.json()).then((r) => setFirstAvailable(r.available === true)).catch(() => setFirstAvailable(false));
+  }, []);
 
   useEffect(() => {
     if (!client) { setReady(true); return; }
@@ -55,19 +62,49 @@ export default function AdminGate({ children }: { children: ReactNode }) {
     } finally { setBusy(false); }
   }
 
+  async function registerFirst(event: FormEvent) {
+    event.preventDefault();
+    if (!client) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch('/api/auth/bootstrap', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? 'تعذر إنشاء الحساب');
+      setFirstAvailable(false);
+      await signInWithEmailAndPassword(client.auth, email.trim(), password);
+      setPassword('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'تعذر إنشاء الحساب');
+    } finally { setBusy(false); }
+  }
+
   const shell = (content: ReactNode) => <div className="message-shell" style={{ maxWidth: 520, margin: '8vh auto' }}>{content}</div>;
 
   if (!ready) return shell(<div className="message-alert warning">جارٍ التحقق من جلسة المدير…</div>);
   if (!client) return shell(<div className="message-alert warning">أكمل متغيرات NEXT_PUBLIC_FIREBASE_* في إعدادات Vercel (أو ملف .env.local) لربط لوحة التحكم بـ Firebase.</div>);
   if (!user) return shell(
-    <form className="message-login" onSubmit={login}>
-      <div className="message-logo">م</div><h2>دخول مدير المنصة</h2>
-      <p>تسجيل الدخول عبر Firebase Authentication. يجب أن يكون دور الحساب <code>admin</code>.</p>
-      <label>البريد الإلكتروني<input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
-      <label>كلمة المرور<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
-      {error && <div className="message-alert error">{error}</div>}
-      <button className="primary-button" type="submit" disabled={busy}>{busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'}</button>
-    </form>,
+    mode === 'register' && firstAvailable ? (
+      <form className="message-login" onSubmit={registerFirst}>
+        <div className="message-logo">م</div><h2>إنشاء حساب المدير الأول</h2>
+        <p>هذا الحساب هو المالك ويملك جميع المناصب (مدير، مطعم، سائق، عميل، دعم). يُغلق هذا الخيار بعد إنشائه.</p>
+        <label>الاسم<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
+        <label>البريد الإلكتروني<input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
+        <label>كلمة المرور (8 أحرف على الأقل)<input type="password" autoComplete="new-password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+        {error && <div className="message-alert error">{error}</div>}
+        <button className="primary-button" type="submit" disabled={busy}>{busy ? 'جارٍ الإنشاء…' : 'إنشاء الحساب'}</button>
+        <button className="secondary-button" type="button" onClick={() => { setMode('login'); setError(''); }}>لدي حساب — تسجيل الدخول</button>
+      </form>
+    ) : (
+      <form className="message-login" onSubmit={login}>
+        <div className="message-logo">م</div><h2>دخول مدير المنصة</h2>
+        <p>تسجيل الدخول عبر Firebase Authentication.</p>
+        <label>البريد الإلكتروني<input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
+        <label>كلمة المرور<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+        {error && <div className="message-alert error">{error}</div>}
+        <button className="primary-button" type="submit" disabled={busy}>{busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'}</button>
+        {firstAvailable && <button className="secondary-button" type="button" onClick={() => { setMode('register'); setError(''); }}>＋ إنشاء حساب (المدير الأول)</button>}
+      </form>
+    ),
   );
   if (!isAdmin) return shell(<div className="message-login"><div className="message-alert error">هذا الحساب ({user.email}) ليس مديرًا. أنشئ المدير بالأمر <code>npm run create-admin</code>.</div><button className="secondary-button" onClick={() => signOut(client.auth)}>تسجيل الخروج</button></div>);
 
