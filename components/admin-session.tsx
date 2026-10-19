@@ -118,6 +118,7 @@ export default function AdminGate({ children }: { children: ReactNode }) {
         {error && <div className="message-alert error">{error}</div>}
         <button className="primary-button" type="submit" disabled={busy}>{busy ? 'جارٍ التحقق…' : 'تسجيل الدخول'}</button>
         {firstAvailable && <button className="secondary-button" type="button" onClick={() => { setMode('register'); setError(''); }}>＋ إنشاء حساب (المدير الأول)</button>}
+        <a className="secondary-button" href="/register" style={{ textAlign: 'center' }}>إنشاء حساب جديد</a>
       </form>
     ),
   );

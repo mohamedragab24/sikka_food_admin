@@ -2,17 +2,17 @@ import { NextRequest } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { AccountError, createAccount, ROLE_COLLECTION, STATUS_ACTIVE, validateAccountInput, type AccountRole } from '@/lib/accounts';
 import { adminAuth, adminDb } from '@/lib/firebaseAdmin';
-import { requireAdmin } from '@/lib/serverAuth';
+import { adminCheck } from '@/lib/serverAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const deny = () => Response.json({ error: 'يلزم تسجيل الدخول بحساب مدير مخوّل' }, { status: 401 });
+const deny = (reason: string) => Response.json({ error: reason || 'يلزم تسجيل الدخول بحساب مدير مخوّل' }, { status: 401 });
 
 /** إنشاء حساب (مطعم / سائق / عميل) من لوحة التحكم — يُفعَّل مباشرة */
 export async function POST(request: NextRequest) {
-  const admin = await requireAdmin(request);
-  if (!admin) return deny();
+  const { admin, reason } = await adminCheck(request);
+  if (!admin) return deny(reason);
   try {
     const body = await request.json() as Record<string, string>;
     const role = body.role as AccountRole;
@@ -30,8 +30,8 @@ export async function POST(request: NextRequest) {
 
 /** تغيير حالة الحساب (نشط / موقوف / مقيّد) أو إعادة تعيين كلمة المرور */
 export async function PATCH(request: NextRequest) {
-  const admin = await requireAdmin(request);
-  if (!admin) return deny();
+  const { admin, reason } = await adminCheck(request);
+  if (!admin) return deny(reason);
   try {
     const body = await request.json() as { role?: AccountRole; uid?: string; accountStatus?: string; blockReason?: string; newPassword?: string };
     if (!body.uid || !body.role || !(body.role in ROLE_COLLECTION)) return Response.json({ error: 'بيانات غير مكتملة' }, { status: 400 });
