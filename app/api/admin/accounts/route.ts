@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as Record<string, string>;
     const role = body.role as AccountRole;
-    const input = { role, name: body.name, email: body.email, phone: body.phone, password: body.password, address: body.address, vehicle: body.vehicle, owner: body.owner };
+    const input = { role, name: body.name, email: body.email, phone: body.phone, password: body.password, address: body.address, vehicle: body.vehicle, owner: body.owner, governorate: body.governorate, area: body.area };
     const problem = validateAccountInput(input);
     if (problem) return Response.json({ error: problem }, { status: 400 });
     const result = await createAccount({ ...input, accountStatus: STATUS_ACTIVE, createdBy: admin.uid } as Parameters<typeof createAccount>[0]);

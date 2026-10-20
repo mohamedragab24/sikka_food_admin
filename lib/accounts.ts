@@ -18,6 +18,8 @@ export type CreateAccountInput = {
   address?: string;
   vehicle?: string;
   owner?: string;
+  governorate?: string;
+  area?: string;
   accountStatus: string;
   createdBy: string; // 'self' أو uid المدير
 };
@@ -30,6 +32,10 @@ export function validateAccountInput(input: Partial<CreateAccountInput>): string
   if (!input.email || !EMAIL_RE.test(input.email.trim())) return 'البريد الإلكتروني غير صالح';
   if (!input.phone || input.phone.replace(/\D/g, '').length < 8) return 'أدخل رقم هاتف صحيحًا';
   if (!input.password || input.password.length < 8) return 'كلمة المرور يجب ألا تقل عن 8 أحرف';
+  if (input.role !== 'customer') {
+    if (!input.governorate?.trim()) return 'اختر المحافظة';
+    if (!input.area?.trim()) return 'أدخل المنطقة';
+  }
   return null;
 }
 
@@ -81,6 +87,8 @@ export async function createAccount(input: CreateAccountInput) {
       email,
       phone: input.phone.trim(),
       address: input.address?.trim() ?? '',
+      governorate: input.governorate?.trim() ?? '',
+      area: input.area?.trim() ?? '',
       accountStatus: input.accountStatus,
       joined: nowLabel().slice(0, 10),
       createdBy: input.createdBy,
@@ -98,7 +106,7 @@ export async function createAccount(input: CreateAccountInput) {
     if (input.role === 'customer') Object.assign(profile, { spent: 0, lastOrder: '' });
     if (input.role === 'restaurant') Object.assign(profile, {
       owner: input.owner?.trim() || common.name, accepting: 'مغلق', sales: 0, payable: 0, rating: '—',
-      lastActivity: '', deliveryFee: 15, minOrder: 0, prepTime: '25–35 دقيقة', cuisine: '', description: '', lat: null, lng: null,
+      lastActivity: '', deliveryFee: 15, minOrder: 0, prepTime: '25–35 دقيقة', cuisine: '', description: '', lat: null, lng: null, logoB64: '',
     });
     if (input.role === 'driver') Object.assign(profile, {
       online: 'غير متصل', availability: 'غير متاح', lastSeen: 'لم يظهر بعد', location: '', earnings: 0,
