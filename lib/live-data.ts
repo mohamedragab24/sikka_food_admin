@@ -73,7 +73,9 @@ export function useLiveData(db: Firestore) {
     merged.restaurants = merged.restaurants.map((r) => {
       const st = stats('restaurantId', r.id);
       const sales = st.completed.reduce((n, o) => n + Number(o.subtotal ?? 0), 0);
-      return { ...r, orders: st.orders, completed: st.completedCount, cancelled: st.cancelled, current: st.current, sales, payable: Math.round(sales * (1 - rate) * 100) / 100 };
+      const rated = st.mine.filter((o) => Number(o.rating) > 0);
+      const rating = rated.length ? (rated.reduce((n, o) => n + Number(o.rating), 0) / rated.length).toFixed(1) : '—';
+      return { ...r, rating, orders: st.orders, completed: st.completedCount, cancelled: st.cancelled, current: st.current, sales, payable: Math.round(sales * (1 - rate) * 100) / 100 };
     });
     merged.drivers = merged.drivers.map((d) => {
       const st = stats('driverId', d.id);

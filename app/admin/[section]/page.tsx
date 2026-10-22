@@ -3,7 +3,7 @@ import AdminWorkspace from '../../../components/admin-workspace';
 
 const supportedSections = [
   'live-orders', 'orders', 'restaurants', 'drivers', 'customers', 'payments',
-  'promotions', 'zones', 'support', 'notifications', 'app-updates', 'reports', 'settings',
+  'promotions', 'zones', 'banners', 'partners', 'support', 'notifications', 'app-updates', 'reports', 'settings',
 ];
 
 export function generateStaticParams() {

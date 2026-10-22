@@ -6,6 +6,7 @@ import AdminMessageCenter from './admin-message-center';
 import { OpenStreetMap, zoneShapes } from './osm-admin-map';
 import { arrayUnion, deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { useAdminSession } from './admin-session';
+import AdminSimpleLists from './admin-simple-lists';
 import { useLiveData } from '../lib/live-data';
 import { ORDER_STATUSES, PAYMENT_STATUSES, PROMO_STATUSES, SECTION_COLLECTION, DEFAULT_SETTINGS, type AdminData, type DemoRow, type Point } from '../lib/admin-types';
 
@@ -66,6 +67,9 @@ function SectionHeading({ section, count }: { section: string; count?: number })
 export default function AdminWorkspace({ section }: { section: string }) {
   if (section === 'notifications' || section === 'app-updates') {
     return <AdminSectionLayout><main className="section-content workspace-content"><AdminMessageCenter kind={section} /></main></AdminSectionLayout>;
+  }
+  if (section === 'banners' || section === 'partners') {
+    return <AdminSectionLayout><main className="section-content workspace-content"><AdminSimpleLists kind={section} /></main></AdminSectionLayout>;
   }
   return <AdminSectionLayout><AdminWorkspaceContent section={section} /></AdminSectionLayout>;
 }

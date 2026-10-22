@@ -16,6 +16,8 @@ export const navigation = [
   { label: 'العروض والكوبونات', href: '/admin/promotions' },
   { label: 'مناطق التوصيل', href: '/admin/zones' },
   { label: 'الدعم', href: '/admin/support' },
+  { label: 'البانرات الإعلانية', href: '/admin/banners' },
+  { label: 'طلبات الشراكة', href: '/admin/partners' },
   { label: 'الإشعارات', href: '/admin/notifications' },
   { label: 'تحديثات التطبيقات', href: '/admin/app-updates' },
   { label: 'التقارير', href: '/admin/reports' },
